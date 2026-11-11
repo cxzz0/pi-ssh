@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { copyFile, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -8,6 +8,7 @@ import type { SshTarget } from "./types";
 import { runLocalProcess } from "./transfer";
 import { remoteShell, runRemoteCommand, sshConnArgs, sshFailureMessage } from "./ssh/transport";
 import { shQuote } from "./utils";
+import { resolveSshExecutable } from "./ssh/client";
 
 export interface NativeTransferOptions {
 	delete?: boolean;
@@ -16,6 +17,18 @@ export interface NativeTransferOptions {
 	gitignore?: boolean;
 	quiet?: boolean;
 	verbose?: boolean;
+}
+
+function tarExecutable(): string {
+	if (process.platform === "win32") {
+		const root = process.env.SystemRoot ?? process.env.WINDIR;
+		if (root) {
+			const native = join(root, "System32", "tar.exe");
+			// Git's GNU tar treats C: as a remote host in archive filenames.
+			if (existsSync(native)) return native;
+		}
+	}
+	return "tar";
 }
 
 // Archives stay on disk, not in runSsh's buffered stdout/stdin, so large syncs
@@ -91,7 +104,7 @@ export async function runTarTransfer(localCwd: string, t: SshTarget, source: str
 				await writeFile(manifest, entries.length ? `${entries.join("\0")}\0` : "");
 				args.push("--no-recursion", "--null", "-T", manifest);
 			} else args.push("--", directory ? "." : fileName);
-			await archiveProcess("tar", args, localCwd, signal);
+			await archiveProcess(tarExecutable(), args, localCwd, signal);
 		} else {
 			const remoteSource = source.slice(prefix.length).replace(/\/+$/, "") || "/";
 			const kind = await runRemoteCommand(t, `if [ -d ${shQuote(remoteSource)} ]; then printf d; elif [ -f ${shQuote(remoteSource)} ]; then printf f; else exit 44; fi`, { login: false, signal });
@@ -99,9 +112,9 @@ export async function runTarTransfer(localCwd: string, t: SshTarget, source: str
 			directory = kind.stdout.toString() === "d";
 			fileName = posix.basename(remoteSource);
 			const args = ["-cf", "-", "-C", directory ? remoteSource : posix.dirname(remoteSource), ...excludes, "--", directory ? "." : fileName];
-			await archiveProcess("ssh", [...sshConnArgs(t), remoteShell(t, `tar ${args.map(shQuote).join(" ")}`, false)], localCwd, signal, undefined, archive);
+			await archiveProcess(resolveSshExecutable(), [...sshConnArgs(t), remoteShell(t, `tar ${args.map(shQuote).join(" ")}`, false)], localCwd, signal, undefined, archive);
 		}
-		const listing = await runLocalProcess(localCwd, "tar", ["-tf", archive], signal);
+		const listing = await runLocalProcess(localCwd, tarExecutable(), ["-tf", archive], signal);
 		if (listing.code !== 0) throw new Error(`Could not read tar archive: ${listing.stderr.toString().trim()}`);
 		const files = listing.stdout.toString().trim();
 		if (!opts.dryRun) {
@@ -112,14 +125,14 @@ export async function runTarTransfer(localCwd: string, t: SshTarget, source: str
 					const target = remoteDest.endsWith("/") ? posix.join(remoteDest, fileName) : remoteDest;
 					command = `stage=$(mktemp -d) && trap 'rm -rf -- "$stage"' EXIT && tar -xf - -C "$stage" && mkdir -p -- ${shQuote(posix.dirname(target))} && mv -- "$stage"/${shQuote(fileName)} ${shQuote(target)}`;
 				}
-				await archiveProcess("ssh", [...sshConnArgs(t), remoteShell(t, command, false)], localCwd, signal, archive);
+				await archiveProcess(resolveSshExecutable(), [...sshConnArgs(t), remoteShell(t, command, false)], localCwd, signal, archive);
 			} else if (directory) {
 				await mkdir(dest, { recursive: true });
-				await archiveProcess("tar", ["-xf", archive, "-C", dest], localCwd, signal);
+				await archiveProcess(tarExecutable(), ["-xf", archive, "-C", dest], localCwd, signal);
 			} else {
 				const extract = join(temp, "extract");
 				await mkdir(extract);
-				await archiveProcess("tar", ["-xf", archive, "-C", extract], localCwd, signal);
+				await archiveProcess(tarExecutable(), ["-xf", archive, "-C", extract], localCwd, signal);
 				const target = dest.endsWith("/") ? join(dest, fileName) : dest;
 				await mkdir(dirname(target), { recursive: true });
 				await copyFile(join(extract, fileName), target);

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Activation, ShellKind, ShellMode, SshTarget } from "../types";
 import { shQuote } from "../utils";
-import { baseSshOptions, closeMaster, probePython, runSsh, sshFailureMessage, wrapForShell } from "./transport";
+import { baseSshOptions, closeMaster, formatSshFailure, probePython, runSsh, wrapForShell } from "./transport";
 
 export async function resolveTarget(remote: string, path?: string, sshOptions: string[] = [], activation?: Activation, shellMode: ShellMode = "auto"): Promise<SshTarget> {
 	const socket = join(tmpdir(), `pi-ssh-${randomBytes(4).toString("hex")}.sock`);
@@ -66,7 +66,7 @@ export async function sshExecRaw(socket: string, remote: string, sshOptions: str
 		wrapForShell("bash", true, command),
 	]);
 	if (r.code !== 0) {
-		throw new Error(`${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
+		throw new Error(formatSshFailure(r));
 	}
 	return r.stdout;
 }

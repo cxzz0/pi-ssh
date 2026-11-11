@@ -7,6 +7,7 @@ import type { AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import type { SshTarget } from "./types";
 import { shQuote } from "./utils";
 import { baseSshOptions } from "./ssh/transport";
+import { resolveSshExecutable } from "./ssh/client";
 
 export async function runLocalProcess(
 	localCwd: string,
@@ -45,7 +46,7 @@ export async function runLocalProcess(
 }
 
 export function rsyncSshCommand(t: SshTarget): string {
-	return ["ssh", ...t.sshOptions, ...baseSshOptions(t.socket)].map(shQuote).join(" ");
+	return [resolveSshExecutable(), ...t.sshOptions, ...baseSshOptions(t.socket)].map(shQuote).join(" ");
 }
 
 // rsync >= 3.1 supports --info=progress2 (single clean progress line); the

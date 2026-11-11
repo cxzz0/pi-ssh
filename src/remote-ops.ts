@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { remoteFindCommand, remoteGrepCommand } from "./search";
+import { resolveSshExecutable } from "./ssh/client";
 import type {
 	BashOperations,
 	EditOperations,
@@ -165,7 +166,7 @@ export function createRemoteBashOps(t: SshTarget, localCwd: string, opts?: { tty
 						reject(new Error("aborted"));
 						return;
 					}
-					const child = spawn("ssh", [...connArgs, remoteShell(t, cmd)], { stdio: ["ignore", "pipe", "pipe"] });
+					const child = spawn(resolveSshExecutable(), [...connArgs, remoteShell(t, cmd)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 					const out: Buffer[] = [];
 					const err: Buffer[] = [];
 					let timedOut = false;

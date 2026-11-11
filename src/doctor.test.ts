@@ -83,6 +83,14 @@ controlpersist 600
 	});
 });
 
+test("parseSshGOutput keeps Windows identity paths and multiple keys", () => {
+	const key = String.raw`C:\Users\Alice Smith\.ssh\id_ed25519`;
+	const parsed = parseSshGOutput(`user alice\r\nhostname example.com\r\nidentityfile ${key}\r\nidentityfile ~/.ssh/backup\r\nidentitiesonly yes\r\nidentityagent none\r\n`);
+	assert.deepEqual(parsed.identityFiles, [key, "~/.ssh/backup"]);
+	assert.equal(parsed.identitiesOnly, "yes");
+	assert.equal(parsed.identityAgent, "none");
+});
+
 test("inspectUserControlMaster checks resolved ControlPath and formats exit command", async () => {
 	const target: SshTarget = {
 		remote: "chiyu@example.com",

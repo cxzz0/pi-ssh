@@ -10,6 +10,7 @@ import type { SshTarget } from "./types";
 import { checkControlSocket, listPiSshSockets } from "./ssh/sweep";
 import { runSsh, sshFailureMessage, supportsMultiplexing } from "./ssh/transport";
 import { shQuote } from "./utils";
+import { resolveSshExecutable } from "./ssh/client";
 
 export interface IncludeDirective {
 	line: number;
@@ -60,6 +61,9 @@ export interface ResolvedSshConfig {
 	controlMaster?: string;
 	controlPath?: string;
 	controlPersist?: string;
+	identityFiles?: string[];
+	identitiesOnly?: string;
+	identityAgent?: string;
 }
 
 export interface UserControlMasterReport {
@@ -180,6 +184,9 @@ export function parseSshGOutput(stdout: string): ResolvedSshConfig {
 		else if (key === "controlmaster") config.controlMaster = value;
 		else if (key === "controlpath") config.controlPath = value;
 		else if (key === "controlpersist") config.controlPersist = value;
+		else if (key === "identityfile") (config.identityFiles ??= []).push(value);
+		else if (key === "identitiesonly") config.identitiesOnly = value;
+		else if (key === "identityagent") config.identityAgent = value;
 	}
 	return config;
 }
@@ -368,11 +375,32 @@ export function formatDoctorReport(report: DoctorReport): string {
 
 export async function runSshDoctor(target?: SshTarget | null): Promise<string> {
 	if (!supportsMultiplexing()) {
-		return ["SSH doctor", target ? `Connection: ${target.remote}:${target.remoteCwd}` : "Connection: not connected",
-			"Transport: native Windows OpenSSH (independent sessions).",
+		const lines = ["SSH doctor", target ? `Connection: ${target.remote}:${target.remoteCwd}` : "Connection: not connected",
+			`SSH client: ${resolveSshExecutable()}`,
+			`Default SSH config: ${defaultSshConfigPath()} (overridable with -F)`,
+			"Transport: Windows (independent sessions).",
+			"Authentication: BatchMode=yes; encrypted keys must be unlocked in the selected client's agent.",
+			"Windows OpenSSH uses the Windows ssh-agent service; Git/WSL agents are separate.",
+			"For Windows OpenSSH, use Windows OpenSSH ssh-add.exe to load keys; see README.md (Windows clients).",
 			"ControlMaster, ControlPath, ControlPersist and ssh -O are not used on Windows.",
 			"Tunnels use dedicated ssh -N -L processes; transfers use tar over SSH.",
-			"Remote requirements: bash; python3 for find/ls/edit; tar for transfers."].join("\n");
+			"Remote requirements: bash; python3 for find/ls/edit; tar for transfers."];
+		if (target) {
+			try {
+				const r = await runSsh(["-G", ...target.sshOptions, "--", target.remote], { timeout: 10 });
+				if (r.code !== 0 || r.timedOut || r.signal) {
+					lines.push(`Resolved SSH config: ${sshFailureMessage(r)}: ${r.stderr.toString().trim()}`);
+				} else {
+					const config = parseSshGOutput(r.stdout.toString());
+					lines.push(`Resolved SSH config: user=${config.user ?? "-"} hostname=${config.hostname ?? "-"} port=${config.port ?? "-"}`);
+					lines.push(`IdentitiesOnly=${config.identitiesOnly ?? "-"} IdentityAgent=${config.identityAgent ?? "default"}`);
+					for (const identity of config.identityFiles ?? []) lines.push(`IdentityFile: ${identity}`);
+				}
+			} catch (e) {
+				lines.push(`Resolved SSH config: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+		return lines.join("\n");
 	}
 	const [config, sockets, userControlMaster] = await Promise.all([
 		readLocalSshConfig(),

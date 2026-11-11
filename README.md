@@ -53,9 +53,12 @@ on the remote; `python3` on the remote enables the efficient in-place
 
 ### Windows clients
 
-Run pi directly in PowerShell or Windows Terminal with the Windows OpenSSH
-client (`ssh.exe`) on PATH. The remote is still a POSIX host with bash, not a
-Windows SSH server. Windows identity paths and quoted spaces are supported:
+Run pi directly in PowerShell or Windows Terminal. On Windows, pi-ssh prefers
+`%SystemRoot%\System32\OpenSSH\ssh.exe` when installed, so Git for Windows's
+SSH cannot accidentally replace the Windows client through PATH ordering.
+Otherwise it falls back to `ssh` on PATH. The remote is still a POSIX host with
+bash, not a Windows SSH server. Windows identity paths and quoted spaces are
+supported:
 
 ```text
 /ssh -i "C:\Users\Alice Smith\.ssh\id_ed25519" user@host:/work
@@ -68,17 +71,66 @@ Windows SSH server. Windows identity paths and quoted spaces are supported:
 - Tunnels use dedicated `ssh -N -L` processes bound to `127.0.0.1`, terminated
   on close/disconnect. Unix clients keep the shared ControlMaster behavior.
 - Push/pull/sync use `tar.exe` over SSH rather than requiring a Windows rsync
-  installation. Install Git for Windows and have `git.exe`, `tar.exe` and
-  `ssh.exe` on PATH; the remote needs tar. Git evaluates nested `.gitignore`
-  rules for pushes, including outside a Git repository, without changing the
+  installation. Install Git for Windows and have `git.exe` available. pi-ssh
+  prefers `%SystemRoot%\System32\tar.exe` over Git's tar, which treats drive
+  letters such as `C:` as remote hosts; if system tar is absent, `tar` on PATH
+  must accept Windows paths. The remote needs tar. Git evaluates nested
+  `.gitignore` rules for pushes, including outside a Git repository, without changing the
   workspace. Transfers send whole archives rather than rsync deltas.
 - Native tar transfers support file renaming, binary data, exclusions and
   dry-run. `delete:true` is rejected explicitly rather than silently ignoring
   deletion; use pi inside WSL with rsync for deleting mirror syncs. Extracting
   Unix symlinks on Windows may require Developer Mode/elevated permissions.
-- `/ssh doctor` reports the Windows transport rather than probing Unix sockets.
-  `python3` on the remote is required for `ssh_find`, `ssh_ls`, and the
-  grep fallback when ripgrep is unavailable.
+- `/ssh doctor` reports the selected SSH executable, default config path and
+  non-interactive authentication requirements rather than probing Unix sockets.
+  When connected, it also uses `ssh -G` to show the resolved host/user and
+  identity paths without reading private keys. `python3` on the remote is
+  required for `ssh_find`, `ssh_ls`, and the grep fallback when ripgrep is unavailable.
+
+#### Encrypted private keys and the Windows agent
+
+Host aliases such as `/ssh svr` use the selected client's normal SSH config
+(on Windows OpenSSH, `%USERPROFILE%\.ssh\config`); `IdentityFile` supports
+Windows paths. No separate pi key configuration is needed.
+
+All connections use `BatchMode=yes`: pi cannot prompt for a server password
+or a private-key passphrase. If a key is encrypted, unlock it in an SSH agent
+before connecting. Windows OpenSSH, Git for Windows SSH and WSL SSH can use
+different agents and keys, so a successful WSL connection does not prove that
+the Windows key is unlocked.
+
+For Windows OpenSSH, enable and start the agent once in an **administrator
+PowerShell** (this changes the Windows service configuration):
+
+```powershell
+Set-Service -Name ssh-agent -StartupType Automatic
+Start-Service ssh-agent
+```
+
+Then run these in your normal PowerShell, entering the key's passphrase only
+at the local `ssh-add` prompt, never in a pi chat or tool argument:
+
+```powershell
+& "$env:WINDIR\System32\OpenSSH\ssh-add.exe" "$env:USERPROFILE\.ssh\id_ed25519"
+& "$env:WINDIR\System32\OpenSSH\ssh-add.exe" -l
+& "$env:WINDIR\System32\OpenSSH\ssh.exe" -o BatchMode=yes -o ClearAllForwardings=yes svr true
+```
+
+Replace the key and host alias as needed. Once the non-interactive check
+succeeds, retry `/ssh svr`. If authentication still fails, check the resolved
+`IdentityFile` and `IdentityAgent` with the same client's `ssh -G svr`.
+
+To deliberately use a different SSH client (for example, Git SSH with its
+own agent), set an executable path before starting pi, then restart pi if it
+was already running. Do not include arguments or shell quoting in the value:
+
+```powershell
+$env:PI_SSH_EXECUTABLE = "C:\Program Files\Git\usr\bin\ssh.exe"
+```
+
+`PI_SSH_EXECUTABLE` is honored on every platform for commands, tunnels and
+transfers. Agent configuration must match the selected client. Windows
+continues to use independent sessions even when an alternate client is selected.
 
 ### Tools and prompt footprint
 
@@ -485,7 +537,20 @@ temporary keys, and cleans up its own connections. On Linux with
 PI_SSH_INTEGRATION=1 node --import tsx --test src/ssh/integration.test.ts
 ```
 
+On Windows, an additional opt-in test uses an existing SSH host alias such as
+`wsl` to verify native SSH config/identity resolution, file/search/bash tools,
+reconnect, binary tar transfers and dedicated local forwarding. The POSIX host
+needs key-based authentication, bash, Python 3, tar and local TCP forwarding;
+its SSH listener must be reachable through its own loopback address. The test
+creates and removes temporary directories without changing keys or SSH config:
+
+```powershell
+$env:PI_SSH_WINDOWS_TARGET = "wsl"
+node --import tsx --test src/ssh/windows.integration.test.ts
+```
+
 CI runs the portable suite on Windows and Linux. POSIX shell SSH shims are
 skipped on Windows; its native OpenSSH option parsing and tar/Git dry-run tests
-still run. The loopback-sshd integration test runs on Linux only.
+still run. The disposable loopback-sshd integration test runs on Linux only;
+the Windows-to-WSL test requires an explicitly configured target.
 </content>

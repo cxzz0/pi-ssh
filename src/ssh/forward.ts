@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import type { SshTarget } from "../types";
-import { baseSshOptions } from "./transport";
+import { baseSshOptions, formatSshFailure } from "./transport";
+import { resolveSshExecutable } from "./client";
 
 export function forwardArgs(t: SshTarget, spec: string): string[] {
 	return [...t.sshOptions, ...baseSshOptions(t.socket, "win32"), "-N", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${spec}`, "--", t.remote];
@@ -14,12 +15,12 @@ export async function startForward(t: SshTarget, spec: string, onExit: () => voi
 		probe.once("error", reject);
 		probe.listen(port, "127.0.0.1", () => probe.close((error) => error ? reject(error) : resolve()));
 	});
-	const child = spawn("ssh", forwardArgs(t, spec), { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+	const child = spawn(resolveSshExecutable(), forwardArgs(t, spec), { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
 	let stderr = "";
 	let failure: Error | undefined;
 	child.stderr!.on("data", (data) => { stderr = (stderr + data.toString()).slice(-4096); });
 	child.on("error", (error) => { failure = error; });
-	child.on("close", (code) => { failure ??= new Error(stderr.trim() || `SSH tunnel exited (${code})`); onExit(); });
+	child.on("close", (code, signal) => { failure ??= new Error(formatSshFailure({ code, signal, stderr: Buffer.from(stderr), stdout: Buffer.alloc(0), timedOut: false })); onExit(); });
 	const deadline = Date.now() + 10_000;
 	try {
 		while (Date.now() < deadline) {

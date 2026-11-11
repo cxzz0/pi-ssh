@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import type { RunOptions, RunResult, ShellKind, SshTarget } from "../types";
 import { shQuote } from "../utils";
+import { resolveSshExecutable } from "./client";
 import {
 	abortableSleep,
 	backoffDelay,
@@ -20,7 +21,7 @@ export function runSsh(args: string[], opts?: RunOptions): Promise<RunResult> {
 			reject(new Error("aborted"));
 			return;
 		}
-		const child = spawn("ssh", args, { stdio: [opts?.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+		const child = spawn(resolveSshExecutable(), args, { stdio: [opts?.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"], windowsHide: true });
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
 		let settled = false;
@@ -113,6 +114,18 @@ export function sshFailureMessage(r: RunResult): string {
 	return `SSH failed (${r.code ?? "unknown"})`;
 }
 
+export function formatSshFailure(r: RunResult, platform: NodeJS.Platform = process.platform): string {
+	const detail = r.stderr.toString().trim() || r.stdout.toString().trim();
+	let message = `${sshFailureMessage(r)}${detail ? `: ${detail}` : ""}`;
+	if (r.code === 255 && !r.timedOut && !r.signal && /Permission denied\s*\([^)]*publickey[^)]*\)/i.test(detail)) {
+		message += "\nSSH uses BatchMode=yes: password and private-key passphrase prompts are disabled. If your key is encrypted, unlock it with ssh-add in the agent used by this SSH client.";
+		if (platform === "win32") {
+			message += " For Windows OpenSSH, start the Windows ssh-agent service and load the key with Windows OpenSSH ssh-add.exe. Git/WSL agents are separate; see README.md (Windows clients).";
+		}
+	}
+	return message;
+}
+
 export function isRetryableSshFailure(r: RunResult): boolean {
 	if (r.code !== 255 || r.timedOut || r.signal) return false;
 	const message = `${r.stderr.toString()}\n${r.stdout.toString()}`;
@@ -168,7 +181,7 @@ export async function runRemoteCommand(t: SshTarget, command: string, opts?: Run
 export async function sshExec(t: SshTarget, command: string): Promise<Buffer> {
 	const r = await runRemoteCommand(t, command);
 	if (r.code !== 0) {
-		throw new Error(`${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
+		throw new Error(formatSshFailure(r));
 	}
 	return r.stdout;
 }
