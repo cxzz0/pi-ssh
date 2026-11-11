@@ -1,7 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createCloseGuard, isTransportSuccessAfterRetry, wrapForShell } from "./transport";
+import { baseSshOptions, createCloseGuard, isTransportSuccessAfterRetry, supportsMultiplexing, wrapForShell } from "./transport";
+import { forwardArgs } from "./forward";
+import { spawnSync } from "node:child_process";
 import type { RunResult } from "../types";
+
+test("native Windows SSH options never enable unsupported multiplexing", () => {
+	assert.equal(supportsMultiplexing("win32"), false);
+	assert.equal(supportsMultiplexing("linux"), true);
+	assert.equal(supportsMultiplexing("darwin"), true);
+	const args = baseSshOptions("C:\\Temp\\pi.sock", "win32");
+	assert.ok(!args.some((arg) => /Control|\.sock|-O/.test(arg)));
+	assert.ok(baseSshOptions("/tmp/pi.sock", "linux").includes("ControlMaster=auto"));
+	const config = spawnSync("ssh", ["-G", ...args, "example.invalid"], { encoding: "utf8" });
+	assert.equal(config.status, 0, config.stderr || config.error?.message || "ssh -G failed");
+});
+
+test("Windows forwards use a dedicated foreground process with fail-fast binding", () => {
+	const args = forwardArgs({ remote: "user@host", socket: "unused", sshOptions: ["-i", "C:\\Keys\\my key"] } as any, "8080:127.0.0.1:80");
+	assert.ok(args.includes("-N"));
+	assert.ok(args.includes("ExitOnForwardFailure=yes"));
+	assert.ok(args.includes("127.0.0.1:8080:127.0.0.1:80"));
+	assert.ok(!args.some((arg) => /Control|-O/.test(arg)));
+	assert.equal(args[1], "C:\\Keys\\my key");
+});
 
 test("createCloseGuard merges in-flight closes for the same socket", async () => {
 	let release!: () => void;

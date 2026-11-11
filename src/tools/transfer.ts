@@ -73,8 +73,10 @@ export function setupTransferTools(ssh: SshContext): void {
 				} else {
 					remoteDest = localIsDir ? ensureTrailingSlash(p) : p;
 					const dirToMake = localIsDir ? stripTrailingSlash(p) : posixDirname(p);
-					const mk = await runRemoteCommand(t, `mkdir -p ${shQuote(dirToMake)}`, { login: false });
-					if (mk.code !== 0) throw new Error(`${sshFailureMessage(mk)}: ${mk.stderr.toString().trim() || dirToMake}`);
+					if (!params.dryRun) {
+						const mk = await runRemoteCommand(t, `mkdir -p ${shQuote(dirToMake)}`, { login: false });
+						if (mk.code !== 0) throw new Error(`${sshFailureMessage(mk)}: ${mk.stderr.toString().trim() || dirToMake}`);
+					}
 				}
 			}
 			const verbose = params.verbose ?? false;
@@ -140,7 +142,7 @@ export function setupTransferTools(ssh: SshContext): void {
 				else if (st) localDest = lp;
 				else localDest = remoteIsDir ? ensureTrailingSlash(lp) : lp;
 			}
-			await mkdir(localDest.endsWith("/") ? localDest : dirname(localDest), { recursive: true });
+			if (!params.dryRun) await mkdir(localDest.endsWith("/") ? localDest : dirname(localDest), { recursive: true });
 			const verbose = params.verbose ?? false;
 			const fallback = `Pulled ${t.remote}:${remoteSource} -> ${localDest}`;
 			const { stdout, elapsedMs } = await runRsyncTransfer(

@@ -16,9 +16,9 @@ and pi's bundled core packages, sharing one OpenSSH ControlMaster connection.
 ## Install
 
 ```bash
-pi install git:github.com/favrei/pi-ssh
+pi install git:github.com/cxzz0/pi-ssh
 # or try it for one run without installing:
-pi -e git:github.com/favrei/pi-ssh
+pi -e git:github.com/cxzz0/pi-ssh
 ```
 
 ## Quickstart
@@ -50,6 +50,48 @@ created. `ssh_push` respects `.gitignore`. Details in the sections below.
 Connection requirements: key-based SSH auth (no password prompts) and `bash`
 on the remote; `python3` on the remote enables the efficient in-place
 `ssh_edit`. Full connection reference:
+
+### Windows clients
+
+Run pi directly in PowerShell or Windows Terminal with the Windows OpenSSH
+client (`ssh.exe`) on PATH. The remote is still a POSIX host with bash, not a
+Windows SSH server. Windows identity paths and quoted spaces are supported:
+
+```text
+/ssh -i "C:\Users\Alice Smith\.ssh\id_ed25519" user@host:/work
+```
+
+- Native Windows OpenSSH does not support ControlMaster multiplexing. On
+  Windows, commands use independent SSH sessions, never ControlMaster,
+  ControlPath, ControlPersist or `ssh -O`. Fresh reconnects still restore
+  process/monitor state and saved tunnels; each new command authenticates again.
+- Tunnels use dedicated `ssh -N -L` processes bound to `127.0.0.1`, terminated
+  on close/disconnect. Unix clients keep the shared ControlMaster behavior.
+- Push/pull/sync use `tar.exe` over SSH rather than requiring a Windows rsync
+  installation. Install Git for Windows and have `git.exe`, `tar.exe` and
+  `ssh.exe` on PATH; the remote needs tar. Git evaluates nested `.gitignore`
+  rules for pushes, including outside a Git repository, without changing the
+  workspace. Transfers send whole archives rather than rsync deltas.
+- Native tar transfers support file renaming, binary data, exclusions and
+  dry-run. `delete:true` is rejected explicitly rather than silently ignoring
+  deletion; use pi inside WSL with rsync for deleting mirror syncs. Extracting
+  Unix symlinks on Windows may require Developer Mode/elevated permissions.
+- `/ssh doctor` reports the Windows transport rather than probing Unix sockets.
+  `python3` on the remote is required for `ssh_find`, `ssh_ls`, and the
+  grep fallback when ripgrep is unavailable.
+
+### Tools and prompt footprint
+
+When disconnected, only `ssh_connect` and `ssh_status` stay active. The other
+15 tools (including `ssh_disconnect`) are hidden using pi's `setActiveTools`,
+so their snippets/guidelines are omitted from pi's system prompt. Connecting
+restores the previously active remote tools; disconnecting hides them again.
+Local tools and other extensions' activation choices are preserved.
+
+Local `find`/`grep` and `fffind`/`ffgrep` are never replaced or redirected.
+Use `ssh_find`/`ssh_grep` for remote searches: path globs support zero-depth
+`**` matches, and the Python/grep fallback honors glob and Git ignore rules
+even when searching a repository subdirectory or Git worktree.
 
 ## Connect
 
@@ -426,6 +468,24 @@ node "$TSC" --noEmit --skipLibCheck --strict --target es2022 --module esnext \
   --typeRoots "$PIROOT/node_modules/@types" index.ts
 ```
 
-Pre-existing SDK strictness mismatches (tool `execute` arity / required `details`)
-are expected — pi loads extensions via jiti, which transpiles without type-checking.
+The regression suite and type-check are verified against pi 1.5.2. For an
+isolated dev checkout without a globally installed pi:
+
+```bash
+npm install --legacy-peer-deps=false --no-save @earendil-works/pi-coding-agent@1.5.2 @earendil-works/pi-tui@1.5.2 typebox@1.3.27
+npm test
+npm run typecheck
+```
+
+The optional real-SSH integration test starts a disposable loopback sshd, uses
+temporary keys, and cleans up its own connections. On Linux with
+`/usr/sbin/sshd` installed and `/run/sshd` available:
+
+```bash
+PI_SSH_INTEGRATION=1 node --import tsx --test src/ssh/integration.test.ts
+```
+
+CI runs the portable suite on Windows and Linux. POSIX shell SSH shims are
+skipped on Windows; its native OpenSSH option parsing and tar/Git dry-run tests
+still run. The loopback-sshd integration test runs on Linux only.
 </content>

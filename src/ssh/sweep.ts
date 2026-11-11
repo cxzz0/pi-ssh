@@ -5,7 +5,7 @@
 import { readdir, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runSsh } from "./transport";
+import { runSsh, supportsMultiplexing } from "./transport";
 
 export interface SweepSocketEntry {
 	path: string;
@@ -55,6 +55,7 @@ export async function listPiSshSockets(dir = tmpdir()): Promise<SweepSocketEntry
 }
 
 export async function checkControlSocket(socket: string): Promise<boolean> {
+	if (!supportsMultiplexing()) return false;
 	const r = await runSsh(["-O", "check", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-o", `ControlPath=${socket}`, "--", "placeholder"], { timeout: 2 }).catch(() => null);
 	return r?.code === 0;
 }
@@ -108,5 +109,6 @@ export async function sweepStaleSockets(opts: SweepOptions = {}): Promise<SweepR
 }
 
 export function startStaleSocketSweep(currentSocket?: string): void {
+	if (!supportsMultiplexing()) return;
 	void sweepStaleSockets({ currentSocket }).catch(() => {});
 }

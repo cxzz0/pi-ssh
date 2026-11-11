@@ -3,6 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { remoteFindCommand, remoteGrepCommand } from "./search";
 import type {
 	BashOperations,
 	EditOperations,
@@ -12,7 +14,7 @@ import type {
 	WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import type { EditResult, RunResult, SshTarget } from "./types";
-import { grepArgs, lastNonEmptyLine, shQuote, stripTrailingSlash, toRemotePath, withFileLock } from "./utils";
+import { lastNonEmptyLine, shQuote, toRemotePath, withFileLock } from "./utils";
 import {
 	baseSshOptions,
 	closeMaster,
@@ -103,53 +105,20 @@ export function createRemoteLsOps(t: SshTarget, localCwd: string): LsOperations 
 	};
 }
 
-export function createRemoteFindOps(t: SshTarget, localCwd: string): FindOperations {
+export function createRemoteFindOps(t: SshTarget, localCwd: string, signal?: AbortSignal): FindOperations {
 	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd, t.remoteHome);
 	return {
 		exists: async (p) => {
-			const r = await runRemoteCommand(t, `test -e ${shQuote(toRemote(p))}`);
+			const r = await runRemoteCommand(t, `test -d ${shQuote(toRemote(p))}`, { signal, login: false });
 			return r.code === 0;
 		},
 		glob: async (pattern, cwd, options) => {
-			// Returns paths relative to the remote search root, then prefixes the LOCAL
-			// search cwd so the SDK find tool slices them back to clean relative output
-			// (returning absolute remote paths makes it relativize against the local cwd
-			// and emit ../../../root/... garbage). Honors .gitignore via `git check-ignore`
-			// (the established tool) when the root is a git repo and git is present.
-			const script = `
-import fnmatch, json, os, subprocess, sys
-payload = json.load(sys.stdin)
-root = payload['root']
-pattern = payload['pattern']
-limit = int(payload['limit'])
-use_gitignore = payload.get('gitignore', True)
-candidates = []
-for dirpath, dirnames, filenames in os.walk(root):
-    dirnames[:] = [d for d in dirnames if d not in {'.git', 'node_modules'}]
-    for name in filenames:
-        path = os.path.join(dirpath, name)
-        rel = os.path.relpath(path, root).replace(os.sep, '/')
-        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(name, pattern):
-            candidates.append(rel)
-if use_gitignore and candidates and os.path.exists(os.path.join(root, '.git')):
-    try:
-        proc = subprocess.run(['git', '-C', root, 'check-ignore', '--stdin'],
-            input='\\n'.join(candidates), capture_output=True, text=True)
-        if proc.returncode in (0, 1):
-            ignored = set(filter(None, proc.stdout.split('\\n')))
-            candidates = [c for c in candidates if c not in ignored]
-    except FileNotFoundError:
-        pass
-print(json.dumps(candidates[:limit]))
-`;
-			const payload = JSON.stringify({ root: toRemote(cwd), pattern, limit: options.limit });
-			const r = await runRemoteCommand(t, `python3 -c ${shQuote(script)}`, { stdin: payload });
+			const remotePattern = process.platform === "win32" ? pattern.replaceAll("\\", "/") : pattern;
+			const payload = JSON.stringify({ root: toRemote(cwd), pattern: remotePattern, limit: options.limit });
+			const r = await runRemoteCommand(t, remoteFindCommand(), { stdin: payload, signal, login: false });
 			if (r.code !== 0) throw new Error(r.stderr.toString().trim() || sshFailureMessage(r));
 			const rels = JSON.parse(lastNonEmptyLine(r.stdout.toString()) || "[]") as string[];
-			// Prefix the LOCAL search cwd so createFindTool's `p.slice(searchPath+1)`
-			// yields the remote-root-relative path verbatim.
-			const base = stripTrailingSlash(cwd);
-			return rels.map((rel) => `${base}/${rel}`);
+			return rels.map((rel) => join(cwd, ...rel.split("/")));
 		},
 	};
 }
@@ -162,28 +131,22 @@ export async function runRemoteGrep(
 ): Promise<{ text: string; details?: Record<string, unknown> }> {
 	const searchPath = toRemotePath(params.path || ".", localCwd, t.remoteCwd, t.remoteHome);
 	const limit = Math.max(1, Math.floor(params.limit ?? 100));
-	const rgArgs = ["--line-number", "--color=never", "--hidden", "--no-heading", "--glob", "!.git/**", "--glob", "!node_modules/**"];
-	if (params.ignoreCase) rgArgs.push("--ignore-case");
-	if (params.literal) rgArgs.push("--fixed-strings");
-	if (params.context && params.context > 0) rgArgs.push("--context", String(Math.floor(params.context)));
-	if (params.glob) rgArgs.push("--glob", params.glob);
-	const rgCommand = `rg ${grepArgs([...rgArgs, "--", params.pattern, searchPath])}`;
-	const grepFallbackArgs = ["-RIn"];
-	if (params.ignoreCase) grepFallbackArgs.push("-i");
-	if (params.literal) grepFallbackArgs.push("-F");
-	if (params.context && params.context > 0) grepFallbackArgs.push(`-C${Math.floor(params.context)}`);
-	const grepCommand = `grep ${grepArgs([...grepFallbackArgs, "--exclude-dir=.git", "--exclude-dir=node_modules", "-e", params.pattern, searchPath])}`;
-	const searchCommand = `if command -v rg >/dev/null 2>&1; then ${rgCommand}; else ${grepCommand}; fi`;
-	const command = `tmp=$(mktemp); if (${searchCommand}) > "$tmp"; then status=0; else status=$?; fi; if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then rm -f "$tmp"; exit "$status"; fi; head -n ${limit} "$tmp"; rm -f "$tmp"`;
-	const r = await runRemoteCommand(t, command, { signal });
-	if (r.code !== 0) throw new Error(`${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
-	const text = r.stdout.toString().trimEnd();
-	if (!text) return { text: "No matches found" };
+	const glob = process.platform === "win32" ? params.glob?.replaceAll("\\", "/") : params.glob;
+	const payload = { ...params, glob, root: searchPath };
+	const searchCommand = remoteGrepCommand(payload);
 	const maxBytes = 50 * 1024;
-	const truncated = Buffer.byteLength(text) > maxBytes;
+	const command = `tmp=$(mktemp) || exit 2; trap 'rm -f -- "$tmp"' EXIT; if (${searchCommand}) > "$tmp"; then status=0; else status=$?; fi; if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then exit "$status"; fi; head -n ${limit + 1} "$tmp" | head -c ${maxBytes + 1}`;
+	const r = await runRemoteCommand(t, command, { signal, stdin: JSON.stringify(payload), login: false });
+	if (r.code !== 0) throw new Error(`${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
+	const lines = r.stdout.toString().trimEnd().split("\n");
+	const limitReached = lines.length > limit;
+	const text = lines.slice(0, limit).join("\n");
+	if (!text) return { text: "No matches found" };
+	const truncated = r.stdout.length > maxBytes;
+	const notices = [limitReached ? `${limit} results limit reached` : "", truncated ? `Truncated at ${maxBytes} bytes` : ""].filter(Boolean);
 	return {
-		text: truncated ? `${Buffer.from(text).subarray(0, maxBytes).toString()}\n\n[Truncated at ${maxBytes} bytes]` : text,
-		details: { matchLimitReached: limit, truncation: truncated ? { truncated: true, maxBytes } : undefined },
+		text: `${Buffer.from(text).subarray(0, maxBytes).toString()}${notices.length ? `\n\n[${notices.join(". ")}]` : ""}`,
+		details: { matchLimitReached: limitReached ? limit : undefined, truncation: truncated ? { truncated: true, maxBytes } : undefined },
 	};
 }
 

@@ -7,48 +7,53 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Activation, ShellKind, ShellMode, SshTarget } from "../types";
 import { shQuote } from "../utils";
-import { baseSshOptions, probePython, runSsh, sshFailureMessage, wrapForShell } from "./transport";
+import { baseSshOptions, closeMaster, probePython, runSsh, sshFailureMessage, wrapForShell } from "./transport";
 
 export async function resolveTarget(remote: string, path?: string, sshOptions: string[] = [], activation?: Activation, shellMode: ShellMode = "auto"): Promise<SshTarget> {
 	const socket = join(tmpdir(), `pi-ssh-${randomBytes(4).toString("hex")}.sock`);
-	const shellProbe = await probeLoginShell(socket, remote, sshOptions);
-	let shellKind: ShellKind = shellMode === "auto" ? shellProbe.shellKind : shellMode;
-	let shellNote = shellProbe.shellNote;
-	let shellStartupStderr: string | undefined;
-	if (shellKind === "zsh") {
-		const sanity = await checkZshStartup(socket, remote, sshOptions);
-		if (!sanity.ok) {
-			const reason = sanity.timedOut ? "zsh startup sanity check timed out" : sanity.code !== 0 ? `zsh startup sanity check exited ${sanity.code ?? "unknown"}` : "zsh startup wrote to stdout";
-			if (shellMode === "auto") {
-				shellKind = "bash";
-				shellNote = `${reason}; using bash -lc`;
-			} else {
-				shellNote = `${reason}; forced --shell zsh may contaminate command output`;
+	try {
+		const shellProbe = await probeLoginShell(socket, remote, sshOptions);
+		let shellKind: ShellKind = shellMode === "auto" ? shellProbe.shellKind : shellMode;
+		let shellNote = shellProbe.shellNote;
+		let shellStartupStderr: string | undefined;
+		if (shellKind === "zsh") {
+			const sanity = await checkZshStartup(socket, remote, sshOptions);
+			if (!sanity.ok) {
+				const reason = sanity.timedOut ? "zsh startup sanity check timed out" : sanity.code !== 0 ? `zsh startup sanity check exited ${sanity.code ?? "unknown"}` : "zsh startup wrote to stdout";
+				if (shellMode === "auto") {
+					shellKind = "bash";
+					shellNote = `${reason}; using bash -lc`;
+				} else {
+					shellNote = `${reason}; forced --shell zsh may contaminate command output`;
+				}
+			} else if (sanity.stderr) {
+				shellNote = "zsh startup writes stderr";
+				shellStartupStderr = sanity.stderr;
 			}
-		} else if (sanity.stderr) {
-			shellNote = "zsh startup writes stderr";
-			shellStartupStderr = sanity.stderr;
 		}
+		const remoteCwd = path
+			? (await sshExecRaw(socket, remote, sshOptions, `cd -- ${shQuote(path)} && pwd -P`)).toString().trim()
+			: (await sshExecRaw(socket, remote, sshOptions, "pwd -P")).toString().trim();
+		const t: SshTarget = {
+			remote,
+			remoteCwd,
+			remoteHome: shellProbe.remoteHome || remoteCwd,
+			socket,
+			hasPython: false,
+			sshOptions,
+			loginShell: shellProbe.loginShell,
+			shellKind,
+			shellNote,
+			shellStartupStderr,
+			defaultCommandPrefix: activation?.commandPrefix?.trim() || undefined,
+			defaultEnv: activation?.env && Object.keys(activation.env).length ? activation.env : undefined,
+		};
+		t.hasPython = await probePython(t);
+		return t;
+	} catch (e) {
+		await closeMaster({ remote, sshOptions, socket });
+		throw e;
 	}
-	const remoteCwd = path
-		? (await sshExecRaw(socket, remote, sshOptions, `cd -- ${shQuote(path)} && pwd -P`)).toString().trim()
-		: (await sshExecRaw(socket, remote, sshOptions, "pwd -P")).toString().trim();
-	const t: SshTarget = {
-		remote,
-		remoteCwd,
-		remoteHome: shellProbe.remoteHome || remoteCwd,
-		socket,
-		hasPython: false,
-		sshOptions,
-		loginShell: shellProbe.loginShell,
-		shellKind,
-		shellNote,
-		shellStartupStderr,
-		defaultCommandPrefix: activation?.commandPrefix?.trim() || undefined,
-		defaultEnv: activation?.env && Object.keys(activation.env).length ? activation.env : undefined,
-	};
-	t.hasPython = await probePython(t);
-	return t;
 }
 
 // sshExec before we have a full target (used during resolve for pwd probe).

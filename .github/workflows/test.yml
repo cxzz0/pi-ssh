@@ -1,0 +1,22 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --legacy-peer-deps=false --no-save @earendil-works/pi-coding-agent@1.5.2 @earendil-works/pi-tui@1.5.2 typebox@1.3.27
+      - run: npm test
+      - run: npm run typecheck
+      - if: runner.os == 'Linux'
+        run: sudo install -d -m 0755 /run/sshd
+      - if: runner.os == 'Linux'
+        run: PI_SSH_INTEGRATION=1 node --import tsx --test src/ssh/integration.test.ts

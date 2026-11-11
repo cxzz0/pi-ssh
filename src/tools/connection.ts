@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import type { SshContext } from "../context";
 import { formatSshSitrep } from "../sitrep";
 import { checkPiControlMaster } from "../doctor";
+import { supportsMultiplexing } from "../ssh/transport";
 
 export function setupConnectionTools(ssh: SshContext): void {
 	const { pi, getTarget, switchTarget, disconnect, refreshStatus, connectedText, profileNames, render } = ssh;
@@ -16,12 +17,7 @@ export function setupConnectionTools(ssh: SshContext): void {
 		label: "ssh_connect",
 		description: "Connect, reconnect, or switch the active SSH remote for ssh_* tools. Same target syntax as /ssh; supports heartbeat tuning for slow links and fresh hard reconnects.",
 		promptSnippet: "Connect or switch the active SSH remote used by ssh_* tools",
-		promptGuidelines: [
-			"Use ssh_connect when the user asks to connect, disconnect, or switch SSH servers.",
-			"Use fresh:true after remote group/PAM/login-environment changes when the current SSH session may have stale login state.",
-			"If a slow link falsely reports offline, increase heartbeatIntervalSeconds/heartbeatTimeoutSeconds or disable the observational heartbeat; it never recycles the ControlMaster.",
-			"After connecting, use ssh_* tools for remote operations and local tools for local work.",
-		],
+		promptGuidelines: ["Use ssh_connect for remote work; connection-dependent tools become available after connecting. Use fresh:true to refresh remote login state."],
 		parameters: Type.Object({
 			target: Type.String({ description: "SSH target: user@host[:/abs/path], ssh options, @profile, plus optional --activate/--env/--shell/--fresh" }),
 			fresh: Type.Optional(Type.Boolean({ description: "Close the current pi-owned ControlMaster and remove its socket before connecting, forcing a new remote login session." })),
@@ -76,7 +72,7 @@ export function setupConnectionTools(ssh: SshContext): void {
 			if (!t) return { content: [{ type: "text" as const, text: "SSH: not connected" }], details: undefined };
 			if (params.verbose) return { content: [{ type: "text" as const, text: await formatSshSitrep(ssh, t) }], details: undefined };
 			const base = connectedText(t);
-			const masterLine = `\npi ControlMaster: ${await checkPiControlMaster(t)} (${t.socket})`;
+			const masterLine = supportsMultiplexing() ? `\npi ControlMaster: ${await checkPiControlMaster(t)} (${t.socket})` : "\nTransport: Windows OpenSSH (independent sessions; no ControlMaster)";
 			let profiles: string[] = [];
 			try { profiles = profileNames(); } catch { /* corrupt profiles file: ignore for status */ }
 			const profileLine = profiles.length ? `\nSaved profiles (reconnect with ssh_connect '@name'): ${profiles.map((n) => `@${n}`).join(", ")}` : "";

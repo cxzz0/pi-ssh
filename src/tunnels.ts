@@ -8,9 +8,11 @@ import { request } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
+import type { ChildProcess } from "node:child_process";
 import type { RunResult, SshTarget } from "./types";
 import type { SshContext } from "./context";
-import { baseSshOptions, runSsh, sshFailureMessage } from "./ssh/transport";
+import { baseSshOptions, runSsh, sshFailureMessage, supportsMultiplexing } from "./ssh/transport";
+import { startForward, stopForward } from "./ssh/forward";
 
 interface TunnelState {
 	localPort: number;
@@ -33,7 +35,7 @@ interface TunnelStore {
 
 export interface TunnelManager {
 	/** Cancel every active forward (best-effort) and clear the in-memory registry. Saved tunnels remain saved. */
-	stopAll(): void;
+	stopAll(): Promise<void>;
 	/** Re-issue every currently active forward (e.g. after a reconnect respawns the master). */
 	restoreAll(): Promise<{ restored: number; failed: number }>;
 	/** Load saved forwards for a target and open them. */
@@ -47,6 +49,7 @@ export function createTunnelManager(ctx: SshContext): TunnelManager {
 	const { pi, requireTarget, render } = ctx;
 	const { str, sshTitle } = render;
 	const tunnels = new Map<number, TunnelState>();
+	const forwards = new Map<string, ChildProcess>();
 
 	function tunnelStorePath(): string {
 		return join(homedir(), ".pi", "ssh-tunnels.json");
@@ -102,7 +105,23 @@ export function createTunnelManager(ctx: SshContext): TunnelManager {
 		return true;
 	}
 
-	function tunnelControl(t: SshTarget, action: "forward" | "cancel", spec: string): Promise<RunResult> {
+	async function tunnelControl(t: SshTarget, action: "forward" | "cancel", spec: string): Promise<RunResult> {
+		if (!supportsMultiplexing()) {
+			const old = forwards.get(spec);
+			forwards.delete(spec);
+			if (old) await stopForward(old);
+			if (action === "forward") {
+				let child: ChildProcess | undefined;
+				child = await startForward(t, spec, () => {
+					if (!child || forwards.get(spec) !== child) return;
+					forwards.delete(spec);
+					tunnels.delete(Number(spec.split(":")[0]));
+					ctx.emit(`SSH tunnel closed unexpectedly: ${spec}. Reopen it with ssh_tunnel.`, { type: "tunnel-exit", spec });
+				});
+				forwards.set(spec, child);
+			}
+			return { code: 0, signal: null, timedOut: false, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+		}
 		// `ssh -O forward/cancel -L <spec> host` asks the running ControlMaster to open
 		// or close a forward without spawning a new session.
 		return runSsh([...t.sshOptions, ...baseSshOptions(t.socket), "-O", action, "-L", spec, "--", t.remote], { timeout: 10 });
@@ -154,13 +173,13 @@ export function createTunnelManager(ctx: SshContext): TunnelManager {
 		return false;
 	}
 
-	function stopAll(): void {
+	async function stopAll(): Promise<void> {
 		const target = ctx.getTarget();
 		if (!target) {
 			tunnels.clear();
 			return;
 		}
-		for (const tn of tunnels.values()) void tunnelControl(target, "cancel", tn.spec).catch(() => {});
+		await Promise.all([...tunnels.values()].map((tn) => tunnelControl(target, "cancel", tn.spec).catch(() => {})));
 		tunnels.clear();
 	}
 

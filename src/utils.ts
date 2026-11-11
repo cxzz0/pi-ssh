@@ -2,7 +2,27 @@
 // Generic helpers (shell quoting, formatting, path mapping, file locks)
 // ---------------------------------------------------------------------------
 
-import { isAbsolute, posix, relative, resolve, sep } from "node:path";
+import pathModule, { posix } from "node:path";
+
+export function tokenizeSshArgs(input: string, platform: NodeJS.Platform = process.platform): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | undefined;
+	let escaping = false;
+	for (const ch of input) {
+		if (escaping) { current += ch; escaping = false; continue; }
+		if (ch === "\\" && quote !== "'" && platform !== "win32") { escaping = true; continue; }
+		if ((ch === "'" || ch === '"') && (!quote || quote === ch)) { quote = quote ? undefined : ch; continue; }
+		if (!quote && /\s/.test(ch)) {
+			if (current) tokens.push(current);
+			current = "";
+		} else current += ch;
+	}
+	if (quote) throw new Error("Unclosed quote in /ssh arguments");
+	if (escaping) current += "\\";
+	if (current) tokens.push(current);
+	return tokens;
+}
 
 export function shQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -101,7 +121,7 @@ export function lastNonEmptyLine(text: string): string {
 	return text.trim().split("\n").filter(Boolean).pop() ?? "";
 }
 
-export function toRemotePath(path: string, localCwd: string, remoteCwd: string, remoteHome?: string): string {
+export function toRemotePath(path: string, localCwd: string, remoteCwd: string, remoteHome?: string, paths = pathModule): string {
 	const normalizedRemoteCwd = stripTrailingSlash(remoteCwd);
 	if (path === "~" || path.startsWith("~/")) {
 		if (!remoteHome) throw new Error(`SSH path mapping needs remote home for path: ${path}`);
@@ -120,16 +140,22 @@ export function toRemotePath(path: string, localCwd: string, remoteCwd: string, 
 		throw new Error(`SSH path mapping refused remote path outside cwd: ${path}`);
 	}
 
-	const localRoot = resolve(localCwd);
-	const absolutePath = isAbsolute(path) ? resolve(path) : resolve(localRoot, path);
-	const relativePath = relative(localRoot, absolutePath);
+	const localRoot = paths.resolve(localCwd);
+	if (paths.sep === "\\" && path.startsWith("/")) return posix.normalize(path);
+	const absolutePath = paths.resolve(localRoot, path);
+	const relativePath = paths.relative(localRoot, absolutePath);
 	if (relativePath === "") {
 		return normalizedRemoteCwd;
 	}
-	if (!relativePath.startsWith("..") && !isAbsolute(relativePath)) {
-		return `${normalizedRemoteCwd}/${relativePath.split(sep).join("/")}`;
+	if (relativePath !== ".." && !relativePath.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relativePath)) {
+		return posix.join(normalizedRemoteCwd, relativePath.split(paths.sep).join("/"));
 	}
-	if (isAbsolute(path)) {
+	if (paths.sep === "\\" && paths.isAbsolute(path)) {
+		const root = paths.parse(absolutePath).root;
+		if (/^[A-Za-z]:\\$/.test(root)) return posix.normalize(`/${absolutePath.slice(root.length).replaceAll("\\", "/")}`);
+		throw new Error(`SSH path mapping refused UNC path: ${path}`);
+	}
+	if (paths.isAbsolute(path)) {
 		return posix.normalize(path);
 	}
 	throw new Error(`SSH path mapping refused path outside workspace: ${path}`);

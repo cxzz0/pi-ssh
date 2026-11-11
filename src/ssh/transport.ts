@@ -76,12 +76,14 @@ export function runSsh(args: string[], opts?: RunOptions): Promise<RunResult> {
 }
 
 /** Common ssh args for every invocation: BatchMode + ControlMaster multiplexing. */
-export function baseSshOptions(socket: string): string[] {
-	return [
-		"-o",
-		"BatchMode=yes",
-		"-o",
-		"ConnectTimeout=10",
+export function supportsMultiplexing(platform: NodeJS.Platform = process.platform): boolean {
+	return platform !== "win32";
+}
+
+export function baseSshOptions(socket: string, platform: NodeJS.Platform = process.platform): string[] {
+	const common = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
+	if (!supportsMultiplexing(platform)) return common;
+	return [...common,
 		"-o",
 		"ControlMaster=auto",
 		"-o",
@@ -208,7 +210,8 @@ export function createCloseGuard(now: () => number = () => Date.now()) {
 
 const closeGuard = createCloseGuard();
 
-export async function closeMaster(t: SshTarget, opts: { unlinkSocket?: boolean; reason?: CloseMasterReason } = {}): Promise<void> {
+export async function closeMaster(t: Pick<SshTarget, "remote" | "sshOptions" | "socket">, opts: { unlinkSocket?: boolean; reason?: CloseMasterReason } = {}): Promise<void> {
+	if (!supportsMultiplexing()) return;
 	// Best-effort teardown; ignore errors. Removing the socket after the control
 	// command keeps a stale/dead mux socket from being re-used on the next invocation.
 	const executed = await closeGuard(t.socket, opts, () =>

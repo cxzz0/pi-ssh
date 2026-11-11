@@ -107,7 +107,7 @@ export function setupFsTools(ssh: SshContext): void {
 		},
 		async execute(id, params, signal, onUpdate) {
 			const t = requireTarget();
-			const tool = createFindTool(localCwd, { operations: createRemoteFindOps(t, localCwd) });
+			const tool = createFindTool(localCwd, { operations: createRemoteFindOps(t, localCwd, signal) });
 			return withReconnect(() => tool.execute(id, params, signal, onUpdate));
 		},
 	});

@@ -49,9 +49,9 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { Activation, ShellMode, SshTarget } from "./types";
-import { buildEnvExports, shQuote, toRemotePath } from "./utils";
+import { buildEnvExports, shQuote, toRemotePath, tokenizeSshArgs } from "./utils";
 import { setReconnectNotifier } from "./ssh/reconnect";
-import { closeMaster, remoteShell, runRemoteCommand, runSsh, setMasterRecycledNotifier, sshConnArgs, sshFailureMessage } from "./ssh/transport";
+import { closeMaster, remoteShell, runRemoteCommand, runSsh, setMasterRecycledNotifier, sshConnArgs, sshFailureMessage, supportsMultiplexing } from "./ssh/transport";
 import { resolveTarget } from "./ssh/target";
 import { sendProcessMessage } from "./notify";
 import { createRender } from "./render";
@@ -65,6 +65,7 @@ import { setupProcessTool } from "./tools/process";
 import { setupMonitorTool } from "./tools/monitor";
 import { setupTransferTools } from "./tools/transfer";
 import { setupHooks } from "./hooks";
+import { createToolActivation } from "./tool-activation";
 import { setupDashboard } from "./dashboard";
 import { detectLocalGlobalControlMaster } from "./doctor";
 import { createPollerManager } from "./poller";
@@ -82,6 +83,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh", { description: "SSH remote, e.g. user@host[:/path], -i key user@host, optionally with --activate <cmd> / --env K=V", type: "string" });
 
 	const localCwd = process.cwd();
+	const updateToolActivation = createToolActivation(pi);
 
 	// Background ssh_process notification poller (owns pollers + latestStartByName).
 	const poller = createPollerManager(pi);
@@ -242,7 +244,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function annotateLocalSshConfig(t: SshTarget): void {
-		t.localControlMasterDetected = detectLocalGlobalControlMaster().hasGlobalControlMaster;
+		t.localControlMasterDetected = supportsMultiplexing() && detectLocalGlobalControlMaster().hasGlobalControlMaster;
 	}
 
 	let tunnelRestoreTimer: NodeJS.Timeout | null = null;
@@ -305,40 +307,6 @@ export default function (pi: ExtensionAPI) {
 		refreshStatus(null);
 		scheduleTunnelRestore(info.socket);
 	});
-
-	function tokenizeSshArgs(input: string): string[] {
-		const tokens: string[] = [];
-		let current = "";
-		let quote: "'" | '"' | undefined;
-		let escaping = false;
-		for (const ch of input) {
-			if (escaping) {
-				current += ch;
-				escaping = false;
-				continue;
-			}
-			if (ch === "\\" && quote !== "'") {
-				escaping = true;
-				continue;
-			}
-			if ((ch === "'" || ch === '"') && (!quote || quote === ch)) {
-				quote = quote ? undefined : ch;
-				continue;
-			}
-			if (!quote && /\s/.test(ch)) {
-				if (current) {
-					tokens.push(current);
-					current = "";
-				}
-				continue;
-			}
-			current += ch;
-		}
-		if (quote) throw new Error("Unclosed quote in /ssh arguments");
-		if (escaping) current += "\\";
-		if (current) tokens.push(current);
-		return tokens;
-	}
 
 	function parseConnectArg(arg: string): { remote: string; path?: string; sshOptions: string[]; activation: Activation; fresh: boolean; shellMode: ShellMode } {
 		const tokens = tokenizeSshArgs(arg);
@@ -513,10 +481,11 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			poller.stopAll();
 			monitors.stopAll();
-			if (prev) ctx.tunnels.stopAll();
+			if (prev) await ctx.tunnels.stopAll();
 		}
 		if (prev && !fresh) await closeMaster(prev);
 		target = next;
+		updateToolActivation(true);
 		if (options.heartbeatEnabled !== undefined) heartbeatEnabled = options.heartbeatEnabled;
 		if (options.heartbeatIntervalSeconds !== undefined) heartbeatPollMs = options.heartbeatIntervalSeconds * 1000;
 		if (options.heartbeatTimeoutSeconds !== undefined) heartbeatTimeoutS = options.heartbeatTimeoutSeconds;
@@ -535,10 +504,11 @@ export default function (pi: ExtensionAPI) {
 		monitors.stopAll();
 		ctx.sync.stop();
 		if (target) {
-			ctx.tunnels.stopAll();
+			await ctx.tunnels.stopAll();
 			await closeMaster(target);
 		}
 		target = null;
+		updateToolActivation(false);
 		resetHeartbeatOnline();
 	}
 
@@ -552,6 +522,7 @@ export default function (pi: ExtensionAPI) {
 
 	function connectedText(t: SshTarget): string {
 		const lines = [`SSH connected: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3; ssh_edit uses fallback)"}`];
+		if (!supportsMultiplexing()) lines.push("  transport: Windows OpenSSH (independent sessions; no ControlMaster)");
 		lines.push(`  shell: ${t.shellKind} (${t.loginShell})${t.shellNote ? ` - ${t.shellNote}` : ""}`);
 		if (t.loginEnvDirty) lines.push("  login env: stale; run /ssh reconnect or ssh_connect fresh:true");
 		if (t.localControlMasterDetected) lines.push("  local ssh config: global ControlMaster detected; run /ssh doctor");
@@ -598,6 +569,7 @@ export default function (pi: ExtensionAPI) {
 		pi,
 		localCwd,
 		getTarget: get,
+		updateToolActivation,
 		requireTarget,
 		poller,
 		monitors,

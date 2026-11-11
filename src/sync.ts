@@ -89,7 +89,7 @@ export function createSyncManager(ctx: SshContext): SyncManager {
 		const s: SyncState = { watcher, localSource, remoteDest, remote: t.remote, debounceMs, delete: params.delete ?? false, excludes: params.excludes, timer: null, syncing: false, pending: false, count: 0 };
 		watcher.on("change", (_event, file) => {
 			// Cheap noise filter: skip VCS/build churn that rsync would exclude anyway.
-			const name = typeof file === "string" ? file : file?.toString() ?? "";
+			const name = (typeof file === "string" ? file : file?.toString() ?? "").replaceAll("\\", "/");
 			if (/(^|\/)\.git\/|(^|\/)node_modules\/|~$|\.swp$/.test(name)) return;
 			scheduleSync(s);
 		});

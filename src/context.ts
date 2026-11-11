@@ -18,6 +18,7 @@ export interface SshContext {
 	localCwd: string;
 	/** Live getter for the active target (null when disconnected). */
 	getTarget(): SshTarget | null;
+	updateToolActivation(connected: boolean): void;
 	/** Active target or throw a connect-first error. */
 	requireTarget(): SshTarget;
 	poller: PollerManager;

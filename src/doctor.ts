@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SshTarget } from "./types";
 import { checkControlSocket, listPiSshSockets } from "./ssh/sweep";
-import { runSsh, sshFailureMessage } from "./ssh/transport";
+import { runSsh, sshFailureMessage, supportsMultiplexing } from "./ssh/transport";
 import { shQuote } from "./utils";
 
 export interface IncludeDirective {
@@ -367,6 +367,13 @@ export function formatDoctorReport(report: DoctorReport): string {
 }
 
 export async function runSshDoctor(target?: SshTarget | null): Promise<string> {
+	if (!supportsMultiplexing()) {
+		return ["SSH doctor", target ? `Connection: ${target.remote}:${target.remoteCwd}` : "Connection: not connected",
+			"Transport: native Windows OpenSSH (independent sessions).",
+			"ControlMaster, ControlPath, ControlPersist and ssh -O are not used on Windows.",
+			"Tunnels use dedicated ssh -N -L processes; transfers use tar over SSH.",
+			"Remote requirements: bash; python3 for find/ls/edit; tar for transfers."].join("\n");
+	}
 	const [config, sockets, userControlMaster] = await Promise.all([
 		readLocalSshConfig(),
 		inspectPiSockets(target?.socket),

@@ -12,6 +12,7 @@ import { listProcesses, type ProcRow } from "./process-queries";
 import type { SshTarget } from "./types";
 import { formatDuration } from "./utils";
 import { checkPiControlMaster } from "./doctor";
+import { supportsMultiplexing } from "./ssh/transport";
 
 function shortId(id: string): string {
 	return id.length > 12 ? id.slice(0, 12) : id;
@@ -58,7 +59,7 @@ export function formatSyncSection(state: ReturnType<SshContext["sync"]["getState
 }
 
 export async function formatSshSitrep(ctx: SshContext, t: SshTarget): Promise<string> {
-	const lines: string[] = [ctx.connectedText(t), `ControlMaster socket: ${t.socket}`, `ControlMaster state: ${await checkPiControlMaster(t)}`];
+	const lines: string[] = [ctx.connectedText(t), ...(supportsMultiplexing() ? [`ControlMaster socket: ${t.socket}`, `ControlMaster state: ${await checkPiControlMaster(t)}`] : ["Transport: Windows OpenSSH (independent sessions; no ControlMaster)"])];
 	try {
 		const profiles = ctx.profileNames();
 		if (profiles.length) lines.push(`Saved profiles: ${profiles.map((n) => `@${n}`).join(", ")}`);

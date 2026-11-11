@@ -10,6 +10,7 @@ export function setupHooks(ctx: SshContext): void {
 
 	// --- startup flag ---
 	pi.on("session_start", async (_event, toolCtx) => {
+		ctx.updateToolActivation(!!getTarget());
 		const arg = pi.getFlag("ssh") as string | undefined;
 		if (arg) {
 			try {
@@ -31,9 +32,9 @@ export function setupHooks(ctx: SshContext): void {
 	// --- remind the agent that local tools stay local ---
 	pi.on("before_agent_start", async (event) => {
 		const t = getTarget();
-		const guidance = t
-			? `\n\nSSH remote connected: ${t.remote}:${t.remoteCwd}. Local tools (read/write/edit/bash) operate on the local workspace. Use ssh_bash, ssh_read, ssh_write, and ssh_edit only for remote operations. ssh_process output/logs/kill/attach accept name as well as id. ssh_tunnel open supports localPort=0, wait/probePath, and saved tunnels restore on reconnect. After remote group/PAM/login-env changes, use ssh_connect fresh:true (or /ssh reconnect) to refresh login state.`
-			: "\n\nSSH tools are available but not connected. Use ssh_connect to connect or switch remotes when remote execution is needed. Local tools remain local. After connecting, saved tunnels restore automatically; ssh_tunnel supports localPort=0 and wait/probePath.";
+		ctx.updateToolActivation(!!t);
+		if (!t) return;
+		const guidance = `\n\nSSH remote connected: ${t.remote}:${t.remoteCwd}. Local tools (including fffind/ffgrep) stay local; use ssh_* tools for remote operations.`;
 		return { systemPrompt: event.systemPrompt + guidance };
 	});
 }

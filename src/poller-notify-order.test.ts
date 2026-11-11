@@ -50,7 +50,7 @@ function makeTarget(): SshTarget {
 	} as unknown as SshTarget;
 }
 
-test("failed emit must not mark notified; retry must deliver (lost-notification ordering bug)", async (t) => {
+test("failed emit must not mark notified; retry must deliver (lost-notification ordering bug)", { skip: process.platform === "win32" ? "Uses a POSIX fake-ssh executable" : false }, async (t) => {
 	const state = mkdtempSync(join(tmpdir(), "poller-repro-"));
 	const fakeBin = makeFakeSsh(state);
 	const savedPath = process.env.PATH ?? "";

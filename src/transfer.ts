@@ -101,6 +101,10 @@ export async function runRsyncTransfer(
 	signal?: AbortSignal,
 	onData?: (chunk: Buffer) => void,
 ): Promise<{ stdout: string; stderr: string; elapsedMs: number }> {
+	if (process.platform === "win32") {
+		const { runTarTransfer } = await import("./transfer-native");
+		return runTarTransfer(localCwd, t, source, dest, opts, signal, onData);
+	}
 	// quiet   -> no output (ssh_sync background runs)
 	// verbose -> per-file itemized list + progress + full stats (opt-in)
 	// default -> stats only, condensed to one line by the caller (summarizeRsync)
